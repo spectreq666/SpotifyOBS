@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="neon-pink">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spectreq OBS Spotify</title>
+    <script>
+        (function () {
+            var params = new URLSearchParams(window.location.search);
+            var isApp = params.get('mode') === 'app';
+            var modeClass = isApp ? 'mode-app' : 'mode-obs';
+            document.documentElement.className = modeClass;
+            window.IS_APP_MODE = isApp;
+        })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800&family=Orbitron:wght@700;900&family=Outfit:wght@400;500;600;700;800;900&family=Share+Tech+Mono&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="mode-obs">
+    <script>
+        if (window.IS_APP_MODE) {
+            document.body.className = 'mode-app';
+        }
+    </script>
+
+    <div id="obsView">
+        <div class="player is-hidden" id="player">
+            <div class="gif-bg" id="gifBg"></div>
+            <div class="fx-overlay"></div>
+            <canvas class="particle-canvas" id="particleCanvas"></canvas>
+            <div class="cover-wrapper">
+                <img class="cover" id="cover" src="/api/cover" alt="Album Art">
+                <div class="equalizer">
+                    <span></span><span></span><span></span><span></span>
+                </div>
+            </div>
+            <div class="track-info">
+                <div class="track-title" id="title">Spotify Player</div>
+                <div class="track-artist" id="artist">Ожидание музыки...</div>
+                <div class="prog-wrap">
+                    <div class="prog-bar" id="progress"></div>
+                </div>
+                <div class="time-row"><span id="current">0:00</span><span id="duration">0:00</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="appView">
+        <header class="app-header">
+            <div class="header-left">
+                <span class="status-indicator online" id="statusDot">●</span>
+                <span class="status-text" id="statusText">Spotify активен</span>
+            </div>
+            <div class="header-right">
+                <span class="theme-active-tag" id="currentThemeLabel">Текущая тема: Neon Cyber Pink</span>
+            </div>
+        </header>
+
+        <section class="studio-section">
+            <div class="section-header">
+                <span class="section-title">▶ ПРЕДПРОСМОТР ПЛЕЕРА В РЕАЛЬНОМ ВРЕМЕНИ</span>
+                <span class="section-subtitle">Так оверлей отображается у вас на стриме в OBS</span>
+            </div>
+            <div class="player app-player" id="appPlayer">
+                <div class="gif-bg" id="gifBgApp"></div>
+                <div class="fx-overlay"></div>
+                <canvas class="particle-canvas" id="particleCanvasApp"></canvas>
+                <div class="cover-wrapper">
+                    <img class="cover" id="coverApp" src="/api/cover" alt="Album Art">
+                    <div class="equalizer"><span></span><span></span><span></span><span></span></div>
+                </div>
+                <div class="track-info">
+                    <div class="track-title" id="titleApp">Spotify Player</div>
+                    <div class="track-artist" id="artistApp">Ожидание музыки...</div>
+                    <div class="prog-wrap">
+                        <div class="prog-bar" id="progressApp"></div>
+                    </div>
+                    <div class="time-row"><span id="currentApp">0:00</span><span id="durationApp">0:00</span></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="studio-section">
+            <div class="section-header">
+                <span class="section-title">🎨 ГАЛЕРЕЯ ТЕМ ОФОРМЛЕНИЯ</span>
+                <span class="section-subtitle">Выберите тему и нажмите «Применить тему» для установки</span>
+            </div>
+
+            <div class="themes-grid">
+                <div class="theme-card" data-theme="neon-pink" onclick="applyTheme('neon-pink')">
+                    <div class="card-preview-box">
+                        <img src="previews/neon-pink.png" alt="Neon Cyber Pink preview" class="preview-screenshot-img" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <div class="mini-player-wrapper" data-theme="neon-pink" style="display:none;">
+                            <div class="player mini-scaled-player">
+                                <div class="fx-overlay"></div>
+                                <div class="cover-wrapper">
+                                    <div class="cover cover-mock-neon"></div>
+                                </div>
+                                <div class="track-info">
+                                    <div class="track-title">Название трека</div>
+                                    <div class="track-artist">Исполнитель</div>
+                                    <div class="prog-wrap">
+                                        <div class="prog-bar" style="width:42%"></div>
+                                    </div>
+                                    <div class="time-row"><span>0:53</span><span>2:21</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="card-title-row">
+                            <span class="card-title-text">💗 Neon Cyber Pink</span>
+                            <span class="active-badge">✓ Активна</span>
+                        </div>
+                        <p class="card-desc">Агрессивный неон, киберпанк скайнлайны и бирюзово-розовый пульсирующий подсвет.</p>
+                        <div class="card-actions">
+                            <button class="btn-apply" onclick="event.stopPropagation();applyTheme('neon-pink')">Применить тему</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="theme-card" data-theme="deep-purple" onclick="applyTheme('deep-purple')">
+                    <div class="card-preview-box">
+                        <img src="previews/deep-purple.png" alt="Deep Purple Glass preview" class="preview-screenshot-img" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <div class="mini-player-wrapper" data-theme="deep-purple" style="display:none;">
+                            <div class="player mini-scaled-player">
+                                <div class="fx-overlay"></div>
+                                <div class="cover-wrapper">
+                                    <div class="cover cover-mock-purple"></div>
+                                </div>
+                                <div class="track-info">
+                                    <div class="track-title">Название трека</div>
+                                    <div class="track-artist">Исполнитель</div>
+                                    <div class="prog-wrap">
+                                        <div class="prog-bar" style="width:42%"></div>
+                                    </div>
+                                    <div class="time-row"><span>0:53</span><span>2:21</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="card-title-row">
+                            <span class="card-title-text">💜 Deep Purple Glass</span>
+                            <span class="active-badge">✓ Активна</span>
+                        </div>
+                        <p class="card-desc">Глубокое фиолетовое стекло с эффектом ультра-матового размытия и фиолетовой аурой.</p>
+                        <div class="card-actions">
+                            <button class="btn-apply" onclick="event.stopPropagation();applyTheme('deep-purple')">Применить тему</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="theme-card" data-theme="emerald-mint" onclick="applyTheme('emerald-mint')">
+                    <div class="card-preview-box">
+                        <img src="previews/emerald-mint.png" alt="Emerald Matrix preview" class="preview-screenshot-img" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <div class="mini-player-wrapper" data-theme="emerald-mint" style="display:none;">
+                            <div class="player mini-scaled-player">
+                                <div class="fx-overlay"></div>
+                                <div class="cover-wrapper">
+                                    <div class="cover cover-mock-emerald"></div>
+                                </div>
+                                <div class="track-info">
+                                    <div class="track-title">Название трека</div>
+                                    <div class="track-artist">Исполнитель</div>
+                                    <div class="prog-wrap">
+                                        <div class="prog-bar" style="width:42%"></div>
+                                    </div>
+                                    <div class="time-row"><span>0:53</span><span>2:21</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="card-title-row">
+                            <span class="card-title-text">💚 Emerald Matrix</span>
+                            <span class="active-badge">✓ Активна</span>
+                        </div>
+                        <p class="card-desc">Стиль Матрица/Терминал: мятная подсветка, цифровая сетка и моноширинный шрифт.</p>
+                        <div class="card-actions">
+                            <button class="btn-apply" onclick="event.stopPropagation();applyTheme('emerald-mint')">Применить тему</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="theme-card" data-theme="aurora-sunset" onclick="applyTheme('aurora-sunset')">
+                    <div class="card-preview-box">
+                        <img src="previews/aurora-sunset.png" alt="Aurora Sunset preview" class="preview-screenshot-img" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <div class="mini-player-wrapper" data-theme="aurora-sunset" style="display:none;">
+                            <div class="player mini-scaled-player">
+                                <div class="fx-overlay"></div>
+                                <div class="cover-wrapper">
+                                    <div class="cover cover-mock-aurora"></div>
+                                </div>
+                                <div class="track-info">
+                                    <div class="track-title">Название трека</div>
+                                    <div class="track-artist">Исполнитель</div>
+                                    <div class="prog-wrap">
+                                        <div class="prog-bar" style="width:42%"></div>
+                                    </div>
+                                    <div class="time-row"><span>0:53</span><span>2:21</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="card-title-row">
+                            <span class="card-title-text">🌅 Aurora Sunset</span>
+                            <span class="active-badge">✓ Активна</span>
+                        </div>
+                        <p class="card-desc">Закатный градиент, вращающийся виниловый диск и золотистые акценты.</p>
+                        <div class="card-actions">
+                            <button class="btn-apply" onclick="event.stopPropagation();applyTheme('aurora-sunset')">Применить тему</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="theme-card" data-theme="obsidian-dark" onclick="applyTheme('obsidian-dark')">
+                    <div class="card-preview-box">
+                        <img src="previews/obsidian-dark.png" alt="Obsidian Dark preview" class="preview-screenshot-img" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <div class="mini-player-wrapper" data-theme="obsidian-dark" style="display:none;">
+                            <div class="player mini-scaled-player">
+                                <div class="fx-overlay"></div>
+                                <div class="cover-wrapper">
+                                    <div class="cover cover-mock-obsidian"></div>
+                                </div>
+                                <div class="track-info">
+                                    <div class="track-title">Название трека</div>
+                                    <div class="track-artist">Исполнитель</div>
+                                    <div class="prog-wrap">
+                                        <div class="prog-bar" style="width:42%"></div>
+                                    </div>
+                                    <div class="time-row"><span>0:53</span><span>2:21</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="card-title-row">
+                            <span class="card-title-text">🖤 Obsidian Dark Indigo</span>
+                            <span class="active-badge">✓ Активна</span>
+                        </div>
+                        <p class="card-desc">Премиальный тёмный индиго с пролетающими лучами и неоново-голубым подсчетом.</p>
+                        <div class="card-actions">
+                            <button class="btn-apply" onclick="event.stopPropagation();applyTheme('obsidian-dark')">Применить тему</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="theme-card" data-theme="custom-gif" onclick="applyTheme('custom-gif')">
+                    <div class="card-preview-box">
+                        <img src="previews/custom-gif.png" alt="Custom GIF preview" class="preview-screenshot-img" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <div class="mini-player-wrapper" data-theme="custom-gif" style="display:none;">
+                            <div class="player mini-scaled-player">
+                                <div class="fx-overlay"></div>
+                                <div class="cover-wrapper">
+                                    <div class="cover cover-mock-gif"></div>
+                                </div>
+                                <div class="track-info">
+                                    <div class="track-title">Название трека</div>
+                                    <div class="track-artist">Исполнитель</div>
+                                    <div class="prog-wrap">
+                                        <div class="prog-bar" style="width:42%"></div>
+                                    </div>
+                                    <div class="time-row"><span>0:53</span><span>2:21</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="card-title-row">
+                            <span class="card-title-text">✨ Кастомная GIF</span>
+                            <span class="active-badge">✓ Активна</span>
+                        </div>
+                        <p class="card-desc">Собственный анимированный GIF-фон с затемнением и летящими частицами.</p>
+                        <div class="card-actions inline-actions">
+                            <button class="btn-apply flex-btn" onclick="event.stopPropagation();applyTheme('custom-gif')">Применить тему</button>
+                            <button class="btn-upload" onclick="event.stopPropagation();triggerGifUpload()">📁 Загрузить GIF</button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+    </div>
+
+    <input type="file" id="gifFileInput" accept="image/gif,image/png,image/jpeg,image/webp" style="display:none" onchange="handleGifUpload(this)">
+    <script src="/script.js"></script>
+</body>
+</html>
