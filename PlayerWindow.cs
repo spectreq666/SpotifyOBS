@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Text;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -16,36 +17,19 @@ public class PlayerWindow : Form
     private WebView2? _webView;
     private readonly Panel _titleBar;
     private readonly Label _titleLabel;
-    private readonly Button _closeButton;
-    private readonly Button _minimizeButton;
     private readonly Panel _nativeContainer;
     private readonly HttpClient _httpClient = new HttpClient();
     private bool _isClosingForReal = false;
     private bool _webViewInitialized = false;
 
-    private static readonly Font EmojiTitleFont = GetEmojiFont(9.5f, FontStyle.Bold);
-    private static readonly Font EmojiButtonFont = GetEmojiFont(8.5f, FontStyle.Bold);
-    private static readonly Font StandardTextFont = new Font("Segoe UI", 8.5f, FontStyle.Regular);
-    private static readonly Font StandardBoldFont = new Font("Segoe UI", 9f, FontStyle.Bold);
-    private static readonly Font CardTitleFont = GetEmojiFont(10f, FontStyle.Bold);
-
-    private static Font GetEmojiFont(float size, FontStyle style = FontStyle.Regular)
-    {
-        try
-        {
-            return new Font("Segoe UI Emoji", size, style);
-        }
-        catch
-        {
-            return new Font("Segoe UI", size, style);
-        }
-    }
+    private const int TITLE_H = 40;
 
     [DllImport("user32.dll")]
     private static extern bool ReleaseCapture();
-
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
+    [DllImport("dwmapi.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
 
     private const int WM_NCLBUTTONDOWN = 0xA1;
     private const int HT_CAPTION = 0x2;
@@ -60,63 +44,75 @@ public class PlayerWindow : Form
         BackColor = Color.FromArgb(10, 10, 18);
         ShowIcon = true;
         ShowInTaskbar = true;
+        DoubleBuffered = true;
 
-        string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Logo.ico");
-        if (File.Exists(iconPath))
-        {
-            try { Icon = new Icon(iconPath); } catch { }
-        }
-        else
-        {
-            try
-            {
-                var extracted = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-                if (extracted != null) Icon = extracted;
-            }
-            catch { }
-        }
+        LoadIcon();
+        ApplyRoundedCorners();
+        Resize += (_, _) => ApplyRoundedCorners();
 
-        _titleBar = new Panel
+        // ── Title bar ──
+        _titleBar = new BufferedPanel
         {
             Dock = DockStyle.Top,
-            Height = 38,
-            BackColor = Color.FromArgb(16, 16, 26)
+            Height = TITLE_H,
         };
-        _titleBar.MouseDown += TitleBar_MouseDown;
+        _titleBar.Paint += PaintTitleBar;
+        _titleBar.MouseDown += DragWindow;
 
         _titleLabel = new Label
         {
-            Text = "🎵 Spectreq OBS Spotify",
-            ForeColor = Color.FromArgb(235, 235, 255),
-            Font = EmojiTitleFont,
+            Text = "Spectreq OBS Spotify",
+            ForeColor = Color.FromArgb(210, 210, 235),
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
             AutoSize = true,
-            Location = new Point(12, 9)
+            Location = new Point(16, 10),
+            BackColor = Color.Transparent,
+            Cursor = Cursors.Default
         };
-        _titleLabel.MouseDown += TitleBar_MouseDown;
+        _titleLabel.MouseDown += DragWindow;
         _titleBar.Controls.Add(_titleLabel);
 
-        _closeButton = CreateHeaderButton("✕", Color.FromArgb(220, 50, 50));
-        _closeButton.Click += (_, _) => Hide();
-        _titleBar.Controls.Add(_closeButton);
+        // Title bar buttons — simple, clean, no emoji
+        var closeBtn = new TitleBtn("×", Color.FromArgb(220, 50, 60), Color.White);
+        closeBtn.Click += (_, _) => Hide();
+        _titleBar.Controls.Add(closeBtn);
 
-        _minimizeButton = CreateHeaderButton("—", Color.FromArgb(60, 60, 90));
-        _minimizeButton.Click += (_, _) => WindowState = FormWindowState.Minimized;
-        _titleBar.Controls.Add(_minimizeButton);
+        var minBtn = new TitleBtn("−", Color.FromArgb(55, 50, 85), Color.FromArgb(200, 195, 220));
+        minBtn.Click += (_, _) => WindowState = FormWindowState.Minimized;
+        _titleBar.Controls.Add(minBtn);
 
-        LayoutHeaderControls();
-        _titleBar.Resize += (_, _) => LayoutHeaderControls();
+        LayoutButtons(closeBtn, minBtn);
+        _titleBar.Resize += (_, _) => LayoutButtons(closeBtn, minBtn);
 
-        _nativeContainer = new Panel
+        // ── Accent line ──
+        var accent = new BufferedPanel { Dock = DockStyle.Top, Height = 1 };
+        accent.Paint += (_, e) =>
+        {
+            if (accent.Width <= 0) return;
+            using var b = new LinearGradientBrush(
+                new Point(0, 0), new Point(accent.Width, 0),
+                Color.FromArgb(130, 80, 255), Color.Transparent);
+            var blend = new ColorBlend(3)
+            {
+                Colors = new[] { Color.FromArgb(140, 130, 80, 255), Color.FromArgb(100, 60, 130, 235), Color.Transparent },
+                Positions = new[] { 0f, 0.45f, 1f }
+            };
+            b.InterpolationColors = blend;
+            e.Graphics.FillRectangle(b, 0, 0, accent.Width, 1);
+        };
+
+        // ── Native fallback ──
+        _nativeContainer = new BufferedPanel
         {
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(10, 10, 18),
             Padding = new Padding(16, 24, 16, 16),
             AutoScroll = true
         };
-
         Controls.Add(_nativeContainer);
-        BuildNativeStudioUI();
+        BuildNativeUI();
 
+        // ── WebView2 ──
         try
         {
             _webView = new WebView2
@@ -128,59 +124,81 @@ public class PlayerWindow : Form
         }
         catch (Exception ex)
         {
-            File.AppendAllText("webview_error.log", $"{DateTime.Now} WebView2 ctor error: {ex.Message}\n");
+            LogError("webview_error.log", $"WebView2 ctor: {ex.Message}");
         }
 
+        Controls.Add(accent);
         Controls.Add(_titleBar);
         _titleBar.BringToFront();
     }
 
-    private Button CreateHeaderButton(string text, Color hoverColor)
+    // ═════════════════════════════════════════════
+    //  Title bar paint
+    // ═════════════════════════════════════════════
+
+    private void PaintTitleBar(object? sender, PaintEventArgs e)
     {
-        var btn = new Button
-        {
-            Text = text,
-            Width = 36,
-            Height = 38,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = Color.FromArgb(210, 210, 230),
-            Font = EmojiButtonFont,
-            Cursor = Cursors.Hand
-        };
-        btn.FlatAppearance.BorderSize = 0;
-        btn.FlatAppearance.MouseOverBackColor = hoverColor;
-        btn.FlatAppearance.MouseDownBackColor = Color.FromArgb(hoverColor.R, hoverColor.G, hoverColor.B);
-        return btn;
+        var g = e.Graphics;
+        var r = _titleBar.ClientRectangle;
+
+        // Gradient: dark to slightly lighter
+        using var bg = new LinearGradientBrush(r,
+            Color.FromArgb(14, 13, 26), Color.FromArgb(20, 18, 36),
+            LinearGradientMode.Horizontal);
+        g.FillRectangle(bg, r);
     }
 
-    private void LayoutHeaderControls()
+    private static void LayoutButtons(Control close, Control min)
     {
-        int right = _titleBar.Width;
-        _closeButton.Location = new Point(right - 36, 0);
-        _minimizeButton.Location = new Point(right - 72, 0);
+        var parent = close.Parent;
+        if (parent == null) return;
+        int y = (parent.Height - 28) / 2;
+        close.Location = new Point(parent.Width - 38, y);
+        min.Location = new Point(parent.Width - 72, y);
     }
+
+    // ═════════════════════════════════════════════
+    //  Rounded corners
+    // ═════════════════════════════════════════════
+
+    private void ApplyRoundedCorners()
+    {
+        if (Width <= 0 || Height <= 0) return;
+        try
+        {
+            int pref = 2; // DWMWCP_ROUND
+            DwmSetWindowAttribute(Handle, 33, ref pref, sizeof(int));
+            Region = null;
+            return;
+        }
+        catch { }
+
+        using var p = RoundedRect(new Rectangle(0, 0, Width, Height), 12);
+        Region = new Region(p);
+    }
+
+    // ═════════════════════════════════════════════
+    //  WebView2
+    // ═════════════════════════════════════════════
 
     protected override async void OnShown(EventArgs e)
     {
         base.OnShown(e);
-
         if (!_webViewInitialized && _webView != null)
-        {
-            await InitializeWebViewAsync();
-        }
+            await InitWebViewAsync();
     }
 
-    private async Task InitializeWebViewAsync()
+    private async Task InitWebViewAsync()
     {
         if (_webView == null) return;
         try
         {
             string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string userDataFolder = Path.Combine(appData, "SpectreqOBS-Spotify", "WebView2");
-            string logFolder = Path.Combine(appData, "SpectreqOBS-Spotify", "Logs");
-            if (!Directory.Exists(logFolder)) Directory.CreateDirectory(logFolder);
+            string userData = Path.Combine(appData, "SpectreqOBS-Spotify", "WebView2");
+            string logDir = Path.Combine(appData, "SpectreqOBS-Spotify", "Logs");
+            if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
 
-            var env = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, userDataFolder);
+            var env = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, userData);
             await _webView.EnsureCoreWebView2Async(env);
 
             if (_webView.CoreWebView2 != null)
@@ -193,9 +211,9 @@ public class PlayerWindow : Form
 
                 string url = $"http://localhost:5000/?mode=app&v={DateTime.Now.Ticks}";
 
-                _webView.CoreWebView2.NavigationCompleted += async (s, e) =>
+                _webView.CoreWebView2.NavigationCompleted += async (_, args) =>
                 {
-                    if (e.IsSuccess)
+                    if (args.IsSuccess)
                     {
                         _webViewInitialized = true;
                         _webView.BringToFront();
@@ -203,7 +221,7 @@ public class PlayerWindow : Form
                     }
                     else
                     {
-                        File.AppendAllText(Path.Combine(logFolder, "webview_error.log"), $"{DateTime.Now} Navigation failed: {e.WebErrorStatus}, retrying...\n");
+                        LogError(Path.Combine(logDir, "webview_error.log"), $"Nav failed: {args.WebErrorStatus}");
                         await Task.Delay(800);
                         try { _webView.CoreWebView2.Navigate(url); } catch { }
                     }
@@ -216,15 +234,17 @@ public class PlayerWindow : Form
         }
         catch (Exception ex)
         {
-            string logFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SpectreqOBS-Spotify", "Logs");
-            if (!Directory.Exists(logFolder)) Directory.CreateDirectory(logFolder);
-            File.AppendAllText(Path.Combine(logFolder, "webview_error.log"), $"{DateTime.Now} WebView2 OnShown Init error: {ex.Message}\n");
+            LogError("webview_error.log", $"Init: {ex.Message}");
             _nativeContainer.BringToFront();
             _titleBar.BringToFront();
         }
     }
 
-    private void BuildNativeStudioUI()
+    // ═════════════════════════════════════════════
+    //  Native fallback UI (shown until WebView2 loads)
+    // ═════════════════════════════════════════════
+
+    private void BuildNativeUI()
     {
         _nativeContainer.Controls.Clear();
         _nativeContainer.AutoScroll = true;
@@ -245,232 +265,182 @@ public class PlayerWindow : Form
         };
         grid.Location = new Point(Math.Max(0, (_nativeContainer.ClientSize.Width - grid.Width) / 2), 0);
 
-        AddThemeCardCustomDraw(grid, "💗 Neon Cyber Pink", "neon-pink", "Киберпанк неон с розовым свечением, бирюзовой рамкой и скайнлайнами.", DrawNeonPreview);
-        AddThemeCardCustomDraw(grid, "💜 Deep Purple Glass", "deep-purple", "Фиолетовый гласморфизм с эффектом матового размытия и свечением.", DrawPurplePreview);
-        AddThemeCardCustomDraw(grid, "💚 Emerald Matrix", "emerald-mint", "Матричный терминал: мятная подсветка, цифровая сетка и моно-шрифт.", DrawEmeraldPreview);
-        AddThemeCardCustomDraw(grid, "🌅 Aurora Sunset", "aurora-sunset", "Закатные тона, золотистая аура и вращающийся виниловый диск.", DrawAuroraPreview);
-        AddThemeCardCustomDraw(grid, "🖤 Obsidian Dark", "obsidian-dark", "Тёмный обсидиан с неоново-голубыми лучами и индиго свечением.", DrawObsidianPreview);
-        AddThemeCardCustomDraw(grid, "✨ Кастомная GIF", "custom-gif", "GIF-анимация с затемнением фона и летящими частицами.", DrawGifPreview, isGifCard: true);
+        AddCard(grid, "Neon Cyber Pink", "neon-pink", "Киберпанк неон с розовым свечением, бирюзовой рамкой и скайнлайнами.", DrawNeonPreview);
+        AddCard(grid, "Deep Purple Glass", "deep-purple", "Фиолетовый гласморфизм с эффектом матового размытия и свечением.", DrawPurplePreview);
+        AddCard(grid, "Emerald Matrix", "emerald-mint", "Матричный терминал: мятная подсветка, цифровая сетка и моно-шрифт.", DrawEmeraldPreview);
+        AddCard(grid, "Aurora Sunset", "aurora-sunset", "Закатные тона, золотистая аура и вращающийся виниловый диск.", DrawAuroraPreview);
+        AddCard(grid, "Obsidian Dark", "obsidian-dark", "Тёмный обсидиан с неоново-голубыми лучами и индиго свечением.", DrawObsidianPreview);
+        AddCard(grid, "Custom GIF", "custom-gif", "GIF-анимация с затемнением фона и летящими частицами.", DrawGifPreview, true);
 
         _nativeContainer.Controls.Add(grid);
     }
 
-    private void AddThemeCardCustomDraw(FlowLayoutPanel parent, string title, string themeKey, string desc, PaintEventHandler paintHandler, bool isGifCard = false)
+    private void AddCard(FlowLayoutPanel parent, string title, string key, string desc, PaintEventHandler preview, bool gif = false)
     {
-        var card = new Panel
+        var card = new BufferedPanel
         {
             Size = new Size(335, 345),
             Margin = new Padding(8),
-            BackColor = Color.FromArgb(18, 18, 30)
+            BackColor = Color.FromArgb(18, 17, 32),
         };
 
-        var previewBox = new Panel
+        // Rounded border paint
+        card.Paint += (_, e) =>
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var path = RoundedRect(new Rectangle(0, 0, card.Width - 1, card.Height - 1), 12);
+            using var pen = new Pen(Color.FromArgb(25, 255, 255, 255), 1f);
+            e.Graphics.DrawPath(pen, path);
+        };
+        // Clip to rounded shape
+        card.Resize += (_, _) =>
+        {
+            using var p = RoundedRect(new Rectangle(0, 0, card.Width, card.Height), 12);
+            card.Region = new Region(p);
+        };
+        using (var initP = RoundedRect(new Rectangle(0, 0, card.Width, card.Height), 12))
+            card.Region = new Region(initP);
+
+        // Preview box
+        var prevBox = new BufferedPanel
         {
             Size = new Size(319, 180),
             Location = new Point(8, 8),
             BackColor = Color.FromArgb(10, 10, 18),
-            Tag = themeKey
+            Tag = key
         };
-        previewBox.Paint += (s, e) =>
+        prevBox.Paint += (s, e) =>
         {
-            string appDir = GetAppDir();
-            string pngPath1 = Path.Combine(appDir, "wwwroot", "previews", $"{themeKey}.png");
-            string pngPath2 = Path.Combine(appDir, "previews", $"{themeKey}.png");
-            string pngPath3 = Path.Combine(AppContext.BaseDirectory, "wwwroot", "previews", $"{themeKey}.png");
-            string pngPath4 = Path.Combine(AppContext.BaseDirectory, "previews", $"{themeKey}.png");
-            string? imgPath = File.Exists(pngPath1) ? pngPath1 : (File.Exists(pngPath2) ? pngPath2 : (File.Exists(pngPath3) ? pngPath3 : (File.Exists(pngPath4) ? pngPath4 : null)));
-
-            if (imgPath != null)
+            string? img = FindPreviewImage(key);
+            if (img != null)
             {
                 try
                 {
-                    using var img = Image.FromFile(imgPath);
+                    using var image = Image.FromFile(img);
                     e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
                     e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-
-                    float imgAspect = (float)img.Width / img.Height;
-                    float boxAspect = (float)previewBox.Width / previewBox.Height;
-                    int drawW, drawH;
-
-                    if (imgAspect > boxAspect)
-                    {
-                        drawW = (int)(previewBox.Width * 0.94f);
-                        drawH = (int)(drawW / imgAspect);
-                    }
-                    else
-                    {
-                        drawH = (int)(previewBox.Height * 0.94f);
-                        drawW = (int)(drawH * imgAspect);
-                    }
-
-                    int drawX = (previewBox.Width - drawW) / 2;
-                    int drawY = (previewBox.Height - drawH) / 2;
-
-                    e.Graphics.DrawImage(img, new Rectangle(drawX, drawY, drawW, drawH));
+                    var (w, h) = FitSize(image.Width, image.Height, prevBox.Width, prevBox.Height, 0.94f);
+                    int x = (prevBox.Width - w) / 2, y = (prevBox.Height - h) / 2;
+                    e.Graphics.DrawImage(image, new Rectangle(x, y, w, h));
                     return;
                 }
                 catch { }
             }
-
-            paintHandler(s, e);
+            preview(s, e);
         };
+        card.Controls.Add(prevBox);
 
-        card.Controls.Add(previewBox);
-
-        var cardTitleLabel = new Label
+        // Title — no emoji, clean
+        card.Controls.Add(new Label
         {
             Text = title,
             ForeColor = Color.White,
-            Font = CardTitleFont,
-            Location = new Point(8, 194),
-            AutoSize = true
-        };
-        card.Controls.Add(cardTitleLabel);
+            Font = new Font("Segoe UI", 10.5f, FontStyle.Bold),
+            Location = new Point(10, 194),
+            AutoSize = true,
+            BackColor = Color.Transparent
+        });
 
-        var descLabel = new Label
+        // Description
+        card.Controls.Add(new Label
         {
             Text = desc,
-            ForeColor = Color.FromArgb(165, 165, 185),
-            Font = StandardTextFont,
-            Location = new Point(8, 216),
-            Size = new Size(319, 75)
-        };
-        card.Controls.Add(descLabel);
+            ForeColor = Color.FromArgb(145, 145, 170),
+            Font = new Font("Segoe UI", 8.5f),
+            Location = new Point(10, 218),
+            Size = new Size(315, 70),
+            BackColor = Color.Transparent
+        });
 
-        var applyBtn = new Button
-        {
-            Text = "Применить тему",
-            Size = isGifCard ? new Size(220, 36) : new Size(319, 36),
-            Location = new Point(8, 300),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(109, 40, 217),
-            ForeColor = Color.White,
-            Font = StandardBoldFont,
-            Cursor = Cursors.Hand
-        };
-        applyBtn.FlatAppearance.BorderSize = 0;
-        applyBtn.Click += async (_, _) => await SelectThemeNativeAsync(themeKey);
+        // Apply button
+        var applyBtn = new GradBtn("Применить тему",
+            gif ? new Size(218, 34) : new Size(315, 34),
+            new Point(10, 300),
+            Color.FromArgb(100, 60, 220), Color.FromArgb(45, 100, 230));
+        applyBtn.Click += async (_, _) => await ApplyThemeAsync(key);
         card.Controls.Add(applyBtn);
 
-        if (isGifCard)
+        if (gif)
         {
-            var gifUploadBtn = new Button
-            {
-                Text = "📁 GIF",
-                Size = new Size(91, 36),
-                Location = new Point(236, 300),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(255, 0, 127),
-                ForeColor = Color.White,
-                Font = EmojiButtonFont,
-                Cursor = Cursors.Hand
-            };
-            gifUploadBtn.FlatAppearance.BorderSize = 0;
-            gifUploadBtn.Click += async (_, _) => await ChooseCustomGifAsync();
-            card.Controls.Add(gifUploadBtn);
+            var gifBtn = new GradBtn("GIF",
+                new Size(89, 34), new Point(236, 300),
+                Color.FromArgb(220, 30, 110), Color.FromArgb(150, 40, 220));
+            gifBtn.Click += async (_, _) => await ChooseCustomGifAsync();
+            card.Controls.Add(gifBtn);
         }
 
         parent.Controls.Add(card);
     }
 
-    private void DrawPlayerCardBase(Graphics g, Rectangle r, Color cardBg, Color coverBorder, Color coverBg, Color titleColor, Color artistColor, Color progColor, bool isVinyl = false, bool isEmerald = false)
+    // ═════════════════════════════════════════════
+    //  Preview drawing
+    // ═════════════════════════════════════════════
+
+    private void DrawCardBase(Graphics g, Rectangle r, Color bg, Color border, Color coverBg, Color titleC, Color artistC, Color progC, bool vinyl = false, bool mono = false)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
-        using (var path = GetRoundedPath(r, 14))
-        using (var fillBrush = new SolidBrush(cardBg))
-        using (var borderPen = new Pen(coverBorder, 1.5f))
+        using (var path = RoundedRect(r, 14))
+        using (var fill = new SolidBrush(bg))
+        using (var pen = new Pen(border, 1.5f))
         {
-            g.FillPath(fillBrush, path);
-            g.DrawPath(borderPen, path);
+            g.FillPath(fill, path);
+            g.DrawPath(pen, path);
         }
 
-        Rectangle coverRect = new Rectangle(r.X + 10, r.Y + 12, 52, 52);
-        if (isVinyl)
+        var cover = new Rectangle(r.X + 10, r.Y + 12, 52, 52);
+        if (vinyl)
         {
-            using var vinylBrush = new SolidBrush(Color.FromArgb(20, 20, 25));
-            using var vinylCenter = new SolidBrush(Color.FromArgb(245, 158, 11));
-            using var vinylPen = new Pen(Color.FromArgb(100, 255, 255, 255), 1.5f);
-            g.FillEllipse(vinylBrush, coverRect);
-            g.DrawEllipse(vinylPen, coverRect);
-            Rectangle centerRect = new Rectangle(coverRect.X + 20, coverRect.Y + 20, 12, 12);
-            g.FillEllipse(vinylCenter, centerRect);
+            using var vb = new SolidBrush(Color.FromArgb(20, 20, 25));
+            using var vc = new SolidBrush(Color.FromArgb(245, 158, 11));
+            using var vp = new Pen(Color.FromArgb(100, 255, 255, 255), 1.5f);
+            g.FillEllipse(vb, cover);
+            g.DrawEllipse(vp, cover);
+            g.FillEllipse(vc, cover.X + 20, cover.Y + 20, 12, 12);
         }
         else
         {
-            int rad = isEmerald ? 4 : 10;
-            using var cPath = GetRoundedPath(coverRect, rad);
-            using var cBrush = new SolidBrush(coverBg);
-            using var cPen = new Pen(coverBorder, 1.5f);
-            g.FillPath(cBrush, cPath);
-            g.DrawPath(cPen, cPath);
+            int rad = mono ? 4 : 10;
+            using var cp = RoundedRect(cover, rad);
+            using var cb = new SolidBrush(coverBg);
+            using var cn = new Pen(border, 1.5f);
+            g.FillPath(cb, cp);
+            g.DrawPath(cn, cp);
         }
 
-        int textX = r.X + 70;
-        using (var tFont = new Font("Segoe UI", 9f, FontStyle.Bold))
-        using (var aFont = new Font("Segoe UI", 7.5f, FontStyle.Regular))
-        using (var tBrush = new SolidBrush(titleColor))
-        using (var aBrush = new SolidBrush(artistColor))
-        {
-            g.DrawString("Название трека", tFont, tBrush, textX, r.Y + 12);
-            g.DrawString("Исполнитель", aFont, aBrush, textX, r.Y + 30);
-        }
+        int tx = r.X + 70;
+        using var tf = new Font("Segoe UI", 9f, FontStyle.Bold);
+        using var af = new Font("Segoe UI", 7.5f);
+        using var tb = new SolidBrush(titleC);
+        using var ab = new SolidBrush(artistC);
+        g.DrawString("Track Title", tf, tb, tx, r.Y + 12);
+        g.DrawString("Artist Name", af, ab, tx, r.Y + 30);
 
-        int progY = r.Y + 48;
-        int progW = r.Width - 82;
-        using (var bgPen = new Pen(Color.FromArgb(50, 255, 255, 255), 4))
-        using (var fillPen = new Pen(progColor, 4))
-        {
-            bgPen.StartCap = LineCap.Round; bgPen.EndCap = LineCap.Round;
-            fillPen.StartCap = LineCap.Round; fillPen.EndCap = LineCap.Round;
+        int py = r.Y + 48, pw = r.Width - 82;
+        using var bgP = new Pen(Color.FromArgb(50, 255, 255, 255), 4) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var fP = new Pen(progC, 4) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        g.DrawLine(bgP, tx, py, tx + pw, py);
+        g.DrawLine(fP, tx, py, tx + (int)(pw * 0.42f), py);
 
-            g.DrawLine(bgPen, textX, progY, textX + progW, progY);
-            g.DrawLine(fillPen, textX, progY, textX + (int)(progW * 0.42f), progY);
-        }
-
-        using (var timeFont = new Font("Segoe UI", 7f, FontStyle.Regular))
-        using (var timeBrush = new SolidBrush(Color.FromArgb(160, 160, 185)))
-        {
-            g.DrawString("0:53", timeFont, timeBrush, textX, r.Y + 56);
-            g.DrawString("2:21", timeFont, timeBrush, textX + progW - 22, r.Y + 56);
-        }
+        using var tmf = new Font("Segoe UI", 7f);
+        using var tmb = new SolidBrush(Color.FromArgb(140, 140, 165));
+        g.DrawString("0:53", tmf, tmb, tx, r.Y + 56);
+        g.DrawString("2:21", tmf, tmb, tx + pw - 22, r.Y + 56);
     }
 
-    private void DrawNeonPreview(object? sender, PaintEventArgs e)
+    private void DrawNeonPreview(object? s, PaintEventArgs e) =>
+        DrawCardBase(e.Graphics, new Rectangle(6, 6, 196, 98), Color.FromArgb(240, 15, 2, 35), Color.FromArgb(255, 0, 127), Color.FromArgb(0, 240, 255), Color.FromArgb(255, 0, 127), Color.FromArgb(0, 240, 255), Color.FromArgb(0, 240, 255));
+    private void DrawPurplePreview(object? s, PaintEventArgs e) =>
+        DrawCardBase(e.Graphics, new Rectangle(6, 6, 196, 98), Color.FromArgb(240, 25, 8, 60), Color.FromArgb(192, 132, 252), Color.FromArgb(168, 85, 247), Color.FromArgb(216, 180, 254), Color.FromArgb(192, 132, 252), Color.FromArgb(168, 85, 247));
+    private void DrawEmeraldPreview(object? s, PaintEventArgs e) =>
+        DrawCardBase(e.Graphics, new Rectangle(6, 6, 196, 98), Color.FromArgb(240, 2, 20, 10), Color.FromArgb(52, 211, 153), Color.FromArgb(16, 185, 129), Color.FromArgb(52, 211, 153), Color.FromArgb(167, 243, 208), Color.FromArgb(52, 211, 153), mono: true);
+    private void DrawAuroraPreview(object? s, PaintEventArgs e) =>
+        DrawCardBase(e.Graphics, new Rectangle(6, 6, 196, 98), Color.FromArgb(240, 45, 10, 28), Color.FromArgb(245, 158, 11), Color.FromArgb(239, 68, 68), Color.FromArgb(253, 230, 138), Color.FromArgb(253, 230, 138), Color.FromArgb(245, 158, 11), vinyl: true);
+    private void DrawObsidianPreview(object? s, PaintEventArgs e) =>
+        DrawCardBase(e.Graphics, new Rectangle(6, 6, 196, 98), Color.FromArgb(240, 6, 8, 20), Color.FromArgb(99, 102, 241), Color.FromArgb(34, 211, 238), Color.FromArgb(34, 211, 238), Color.FromArgb(129, 140, 248), Color.FromArgb(34, 211, 238));
+    private void DrawGifPreview(object? s, PaintEventArgs e)
     {
-        Rectangle r = new Rectangle(6, 6, 196, 98);
-        DrawPlayerCardBase(e.Graphics, r, Color.FromArgb(240, 15, 2, 35), Color.FromArgb(255, 0, 127), Color.FromArgb(0, 240, 255), Color.FromArgb(255, 0, 127), Color.FromArgb(0, 240, 255), Color.FromArgb(0, 240, 255));
-    }
-
-    private void DrawPurplePreview(object? sender, PaintEventArgs e)
-    {
-        Rectangle r = new Rectangle(6, 6, 196, 98);
-        DrawPlayerCardBase(e.Graphics, r, Color.FromArgb(240, 25, 8, 60), Color.FromArgb(192, 132, 252), Color.FromArgb(168, 85, 247), Color.FromArgb(216, 180, 254), Color.FromArgb(192, 132, 252), Color.FromArgb(168, 85, 247));
-    }
-
-    private void DrawEmeraldPreview(object? sender, PaintEventArgs e)
-    {
-        Rectangle r = new Rectangle(6, 6, 196, 98);
-        DrawPlayerCardBase(e.Graphics, r, Color.FromArgb(240, 2, 20, 10), Color.FromArgb(52, 211, 153), Color.FromArgb(16, 185, 129), Color.FromArgb(52, 211, 153), Color.FromArgb(167, 243, 208), Color.FromArgb(52, 211, 153), isEmerald: true);
-    }
-
-    private void DrawAuroraPreview(object? sender, PaintEventArgs e)
-    {
-        Rectangle r = new Rectangle(6, 6, 196, 98);
-        DrawPlayerCardBase(e.Graphics, r, Color.FromArgb(240, 45, 10, 28), Color.FromArgb(245, 158, 11), Color.FromArgb(239, 68, 68), Color.FromArgb(253, 230, 138), Color.FromArgb(253, 230, 138), Color.FromArgb(245, 158, 11), isVinyl: true);
-    }
-
-    private void DrawObsidianPreview(object? sender, PaintEventArgs e)
-    {
-        Rectangle r = new Rectangle(6, 6, 196, 98);
-        DrawPlayerCardBase(e.Graphics, r, Color.FromArgb(240, 6, 8, 20), Color.FromArgb(99, 102, 241), Color.FromArgb(34, 211, 238), Color.FromArgb(34, 211, 238), Color.FromArgb(129, 140, 248), Color.FromArgb(34, 211, 238));
-    }
-
-    private void DrawGifPreview(object? sender, PaintEventArgs e)
-    {
-        Rectangle r = new Rectangle(6, 6, 196, 98);
-        DrawPlayerCardBase(e.Graphics, r, Color.FromArgb(240, 28, 5, 25), Color.FromArgb(255, 0, 127), Color.FromArgb(255, 102, 204), Color.FromArgb(255, 153, 221), Color.FromArgb(255, 180, 230), Color.FromArgb(255, 0, 127));
-
+        DrawCardBase(e.Graphics, new Rectangle(6, 6, 196, 98), Color.FromArgb(240, 28, 5, 25), Color.FromArgb(255, 0, 127), Color.FromArgb(255, 102, 204), Color.FromArgb(255, 153, 221), Color.FromArgb(255, 180, 230), Color.FromArgb(255, 0, 127));
         using var p1 = new SolidBrush(Color.FromArgb(220, 255, 0, 127));
         using var p2 = new SolidBrush(Color.FromArgb(200, 0, 240, 255));
         e.Graphics.FillEllipse(p1, 25, 18, 4, 4);
@@ -479,83 +449,33 @@ public class PlayerWindow : Form
         e.Graphics.FillEllipse(p2, 45, 80, 5, 5);
     }
 
-    private static GraphicsPath GetRoundedPath(Rectangle rect, int radius)
-    {
-        GraphicsPath path = new GraphicsPath();
-        int diameter = radius * 2;
-        Rectangle arc = new Rectangle(rect.X, rect.Y, diameter, diameter);
+    // ═════════════════════════════════════════════
+    //  Theme + GIF actions
+    // ═════════════════════════════════════════════
 
-        path.AddArc(arc, 180, 90);
-        arc.X = rect.Right - diameter;
-        path.AddArc(arc, 270, 90);
-        arc.Y = rect.Bottom - diameter;
-        path.AddArc(arc, 0, 90);
-        arc.X = rect.X;
-        path.AddArc(arc, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
-
-    private async Task SelectThemeNativeAsync(string themeKey)
+    private async Task ApplyThemeAsync(string key)
     {
         try
         {
-            await _httpClient.GetAsync($"http://localhost:5000/api/theme/set?name={themeKey}");
-            if (_webView != null && _webView.CoreWebView2 != null)
-            {
-                await _webView.CoreWebView2.ExecuteScriptAsync($"if (window.setTheme) window.setTheme('{themeKey}');");
-            }
-            MessageBox.Show($"Тема «{themeKey}» успешно установлена!", "Установка темы", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            await _httpClient.GetAsync($"http://localhost:5000/api/theme/set?name={key}");
+            if (_webView?.CoreWebView2 != null)
+                await _webView.CoreWebView2.ExecuteScriptAsync($"if(window.setTheme)window.setTheme('{key}')");
+            MessageBox.Show($"Тема «{key}» установлена!", "Тема", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Ошибка при смене темы: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show($"Ошибка: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-    }
-
-    private Task<string?> ShowOpenFileDialogAsync()
-    {
-        var tcs = new TaskCompletionSource<string?>();
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                using var dialog = new OpenFileDialog
-                {
-                    Title = "Выберите GIF или фоновое изображение для плеера",
-                    Filter = "GIF Анимации (*.gif)|*.gif|Все форматы (*.gif;*.png;*.jpg;*.webp)|*.gif;*.png;*.jpg;*.webp",
-                    CheckFileExists = true
-                };
-
-                if (dialog.ShowDialog() == DialogResult.OK)
-                {
-                    tcs.SetResult(dialog.FileName);
-                }
-                else
-                {
-                    tcs.SetResult(null);
-                }
-            }
-            catch (Exception ex)
-            {
-                tcs.SetException(ex);
-            }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        return tcs.Task;
     }
 
     public async Task ChooseCustomGifAsync()
     {
         try
         {
-            string? selectedFile = await ShowOpenFileDialogAsync();
-            if (string.IsNullOrEmpty(selectedFile)) return;
-
-            byte[] bytes = await File.ReadAllBytesAsync(selectedFile);
+            string? file = await ShowFileDialogAsync();
+            if (string.IsNullOrEmpty(file)) return;
+            byte[] bytes = await File.ReadAllBytesAsync(file);
             using var content = new ByteArrayContent(bytes);
-
             try
             {
                 await _httpClient.PostAsync("http://localhost:5000/api/gif/upload", content);
@@ -564,79 +484,258 @@ public class PlayerWindow : Form
             {
                 string wwwroot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
                 Directory.CreateDirectory(wwwroot);
-                string targetPath = Path.Combine(wwwroot, "custom_bg.gif");
-                await File.WriteAllBytesAsync(targetPath, bytes);
+                await File.WriteAllBytesAsync(Path.Combine(wwwroot, "custom_bg.gif"), bytes);
                 await _httpClient.GetAsync("http://localhost:5000/api/theme/set?name=custom-gif");
             }
-
             await NavigateToThemeAsync("custom-gif");
-            MessageBox.Show("Кастомный GIF фон успешно обновлён!", "Кастомная тема", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show("GIF фон обновлён!", "Кастомная тема", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
-            File.AppendAllText("gif_error.log", $"{DateTime.Now}\n{ex}\n");
-            MessageBox.Show($"Ошибка при сохранении GIF файла:\n{ex.Message}", "Ошибка GIF", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            LogError("gif_error.log", ex.ToString());
+            MessageBox.Show($"Ошибка: {ex.Message}", "Ошибка GIF", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
-    public async Task NavigateToThemeAsync(string themeName)
+    public async Task NavigateToThemeAsync(string theme)
     {
         try
         {
-            if (_webView != null && _webView.CoreWebView2 != null)
-            {
-                await _webView.CoreWebView2.ExecuteScriptAsync($"if (window.setTheme) window.setTheme('{themeName}');");
-            }
+            if (_webView?.CoreWebView2 != null)
+                await _webView.CoreWebView2.ExecuteScriptAsync($"if(window.setTheme)window.setTheme('{theme}')");
         }
         catch (Exception ex)
         {
-            File.AppendAllText("webview_error.log", $"{DateTime.Now} Theme switch error: {ex.Message}\n");
+            LogError("webview_error.log", $"Theme switch: {ex.Message}");
         }
     }
 
-    private void TitleBar_MouseDown(object? sender, MouseEventArgs e)
+    // ═════════════════════════════════════════════
+    //  Helpers
+    // ═════════════════════════════════════════════
+
+    private void LoadIcon()
     {
-        if (e.Button == MouseButtons.Left)
-        {
-            ReleaseCapture();
-            SendMessage(Handle, WM_NCLBUTTONDOWN, HT_CAPTION, 0);
-        }
+        string path = Path.Combine(AppContext.BaseDirectory, "Assets", "Logo.ico");
+        if (File.Exists(path)) { try { Icon = new Icon(path); } catch { } }
+        else { try { var x = Icon.ExtractAssociatedIcon(Application.ExecutablePath); if (x != null) Icon = x; } catch { } }
     }
 
-    public void ClosePermanently()
+    private void DragWindow(object? s, MouseEventArgs e)
     {
-        _isClosingForReal = true;
-        Close();
+        if (e.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(Handle, WM_NCLBUTTONDOWN, HT_CAPTION, 0); }
+    }
+
+    public void ClosePermanently() { _isClosingForReal = true; Close(); }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (!_isClosingForReal && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
+        else base.OnFormClosing(e);
+    }
+
+    private static string? FindPreviewImage(string key)
+    {
+        string appDir = GetAppDir();
+        string[] paths = {
+            Path.Combine(appDir, "wwwroot", "previews", $"{key}.png"),
+            Path.Combine(appDir, "previews", $"{key}.png"),
+            Path.Combine(AppContext.BaseDirectory, "wwwroot", "previews", $"{key}.png"),
+            Path.Combine(AppContext.BaseDirectory, "previews", $"{key}.png"),
+        };
+        foreach (var p in paths) if (File.Exists(p)) return p;
+        return null;
+    }
+
+    private static (int w, int h) FitSize(int imgW, int imgH, int boxW, int boxH, float scale)
+    {
+        float ia = (float)imgW / imgH, ba = (float)boxW / boxH;
+        int w, h;
+        if (ia > ba) { w = (int)(boxW * scale); h = (int)(w / ia); }
+        else { h = (int)(boxH * scale); w = (int)(h * ia); }
+        return (w, h);
     }
 
     private static string GetAppDir()
     {
-        try
-        {
-            string? procPath = Environment.ProcessPath;
-            if (!string.IsNullOrEmpty(procPath))
-            {
-                string? dir = Path.GetDirectoryName(procPath);
-                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
-                {
-                    return dir;
-                }
-            }
-        }
-        catch { }
+        try { var p = Environment.ProcessPath; if (p != null) { var d = Path.GetDirectoryName(p); if (d != null && Directory.Exists(d)) return d; } } catch { }
         return AppContext.BaseDirectory;
     }
 
-    protected override void OnFormClosing(FormClosingEventArgs e)
+    private static Task<string?> ShowFileDialogAsync()
     {
-        if (!_isClosingForReal && e.CloseReason == CloseReason.UserClosing)
+        var tcs = new TaskCompletionSource<string?>();
+        var t = new Thread(() =>
         {
-            e.Cancel = true;
-            Hide();
-        }
-        else
+            try
+            {
+                using var d = new OpenFileDialog
+                {
+                    Title = "Выберите GIF или изображение",
+                    Filter = "GIF (*.gif)|*.gif|Все (*.gif;*.png;*.jpg;*.webp)|*.gif;*.png;*.jpg;*.webp",
+                    CheckFileExists = true
+                };
+                tcs.SetResult(d.ShowDialog() == DialogResult.OK ? d.FileName : null);
+            }
+            catch (Exception ex) { tcs.SetException(ex); }
+        });
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+        return tcs.Task;
+    }
+
+    private static void LogError(string file, string msg)
+    {
+        try
         {
-            base.OnFormClosing(e);
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SpectreqOBS-Spotify", "Logs");
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            string fullPath = Path.IsPathRooted(file) ? file : Path.Combine(dir, file);
+            File.AppendAllText(fullPath, $"{DateTime.Now} {msg}\n");
         }
+        catch { }
+    }
+
+    private static GraphicsPath RoundedRect(Rectangle r, int rad)
+    {
+        var p = new GraphicsPath();
+        int d = rad * 2;
+        if (r.Width <= 0 || r.Height <= 0) return p;
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
+    }
+}
+
+// ═══════════════════════════════════════════════════
+//  BufferedPanel — flicker-free panel
+// ═══════════════════════════════════════════════════
+
+internal class BufferedPanel : Panel
+{
+    public BufferedPanel()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    }
+}
+
+// ═══════════════════════════════════════════════════
+//  TitleBtn — minimal round title bar button
+// ═══════════════════════════════════════════════════
+
+internal class TitleBtn : Control
+{
+    private readonly string _sym;
+    private readonly Color _hoverBg;
+    private readonly Color _hoverFg;
+    private bool _hover;
+
+    public TitleBtn(string symbol, Color hoverBg, Color hoverFg)
+    {
+        _sym = symbol;
+        _hoverBg = hoverBg;
+        _hoverFg = hoverFg;
+        Size = new Size(30, 28);
+        Cursor = Cursors.Hand;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
+                 ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+        if (_hover)
+        {
+            using var bg = new SolidBrush(_hoverBg);
+            g.FillEllipse(bg, 1, 1, Width - 3, Height - 3);
+        }
+
+        using var font = new Font("Segoe UI", 11f, FontStyle.Regular);
+        using var brush = new SolidBrush(_hover ? _hoverFg : Color.FromArgb(160, 155, 180));
+        var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString(_sym, font, brush, new RectangleF(0, -1, Width, Height), sf);
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+}
+
+// ═══════════════════════════════════════════════════
+//  GradBtn — gradient rounded button
+// ═══════════════════════════════════════════════════
+
+internal class GradBtn : Control
+{
+    private readonly Color _c1, _c2;
+    private bool _hover, _press;
+
+    public GradBtn(string text, Size size, Point loc, Color c1, Color c2)
+    {
+        Text = text;
+        Size = size;
+        Location = loc;
+        _c1 = c1;
+        _c2 = c2;
+        ForeColor = Color.White;
+        Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+        Cursor = Cursors.Hand;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
+                 ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+        var r = new Rectangle(0, 0, Width - 1, Height - 1);
+        using var path = RoundedRect(r, 8);
+
+        var sc = _hover ? Brighten(_c1, 25) : _c1;
+        var ec = _hover ? Brighten(_c2, 25) : _c2;
+
+        using var grad = new LinearGradientBrush(r, sc, ec, LinearGradientMode.Horizontal);
+        g.FillPath(grad, path);
+
+        if (_press)
+        {
+            using var dim = new SolidBrush(Color.FromArgb(40, 0, 0, 0));
+            g.FillPath(dim, path);
+        }
+
+        using var brush = new SolidBrush(ForeColor);
+        var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString(Text, Font, brush, new RectangleF(0, 0, Width, Height), sf);
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = false; _press = false; Invalidate(); }
+    protected override void OnMouseDown(MouseEventArgs e) { _press = true; Invalidate(); }
+    protected override void OnMouseUp(MouseEventArgs e) { _press = false; Invalidate(); }
+
+    private static Color Brighten(Color c, int amount) =>
+        Color.FromArgb(c.A, Math.Min(255, c.R + amount), Math.Min(255, c.G + amount), Math.Min(255, c.B + amount));
+
+    private static GraphicsPath RoundedRect(Rectangle r, int rad)
+    {
+        var p = new GraphicsPath();
+        int d = rad * 2;
+        if (r.Width <= 0 || r.Height <= 0) return p;
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
     }
 }

@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Text;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.AspNetCore.Builder;
@@ -17,6 +20,12 @@ public class TrayApplication : ApplicationContext
     private readonly HttpClient _httpClient = new HttpClient();
     private readonly Dictionary<string, ToolStripMenuItem> _themeMenuItems = new();
     private string _currentTheme = "neon-pink";
+
+    [DllImport("dwmapi.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int pvAttribute, int cbAttribute);
+
+    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    private const int DWMWCP_ROUND = 2;
 
     public TrayApplication(WebApplication app)
     {
@@ -49,65 +58,97 @@ public class TrayApplication : ApplicationContext
 
         var menu = new ContextMenuStrip
         {
-            Renderer = new PurpleMenuRenderer(),
-            BackColor = Color.FromArgb(18, 14, 34),
-            ShowImageMargin = false
+            Renderer = new SpectreqMenuRenderer(),
+            BackColor = Color.FromArgb(14, 12, 24),
+            ShowImageMargin = true,
+            ImageScalingSize = new Size(20, 20),
+            AutoSize = true,
+            Padding = new Padding(4, 6, 4, 6),
+            DropShadowEnabled = true,
         };
+        menu.HandleCreated += (s, _) => { if (s is Control c) TryRoundCorners(c.Handle); };
 
-        var openWindowItem = new ToolStripMenuItem("📱 Открыть окно плеера", null, (_, _) => ShowPlayerWindow())
-        {
-            Font = new Font("Segoe UI Emoji", 9.5f, FontStyle.Bold),
-            ForeColor = Color.White
-        };
-        menu.Items.Add(openWindowItem);
+        // ── Open Player ──
+        var openItem = MakeItem("Открыть окно плеера", true);
+        openItem.Click += (_, _) => ShowPlayerWindow();
+        menu.Items.Add(openItem);
 
-        var themeSubMenu = new ToolStripMenuItem("🎨 Тема оформления")
-        {
-            Font = new Font("Segoe UI Emoji", 9f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(235, 230, 255)
-        };
-        themeSubMenu.DropDown.Renderer = new PurpleMenuRenderer();
-        themeSubMenu.DropDown.BackColor = Color.FromArgb(18, 14, 34);
+        // ── Themes ──
+        var themeItem = MakeItem("Тема оформления", false);
+        themeItem.DropDown.Renderer = new SpectreqMenuRenderer();
+        themeItem.DropDown.BackColor = Color.FromArgb(14, 12, 24);
+        themeItem.DropDown.Padding = new Padding(4, 6, 4, 6);
+        themeItem.DropDown.HandleCreated += (s, _) => { if (s is Control c) TryRoundCorners(c.Handle); };
 
-        AddThemeMenuItem(themeSubMenu, "💗 Неоновый Розовый (Neon Cyber)", "neon-pink");
-        AddThemeMenuItem(themeSubMenu, "💜 Фиолетовый Глянцевый (Deep Purple)", "deep-purple");
-        AddThemeMenuItem(themeSubMenu, "💚 Изумрудный Мятный (Emerald Mint)", "emerald-mint");
-        AddThemeMenuItem(themeSubMenu, "🌅 Закат Аврора (Aurora Sunset)", "aurora-sunset");
-        AddThemeMenuItem(themeSubMenu, "🖤 Обсидиан (Obsidian Dark)", "obsidian-dark");
-        AddThemeMenuItem(themeSubMenu, "✨ Кастомная GIF тема (Pink Particles)", "custom-gif");
-        menu.Items.Add(themeSubMenu);
-
-        menu.Opening += (_, _) => SyncThemeFromConfig();
-        themeSubMenu.DropDownOpening += (_, _) => SyncThemeFromConfig();
+        AddThemeItem(themeItem, "Neon Cyber Pink", "neon-pink");
+        AddThemeItem(themeItem, "Deep Purple Glass", "deep-purple");
+        AddThemeItem(themeItem, "Emerald Matrix", "emerald-mint");
+        AddThemeItem(themeItem, "Aurora Sunset", "aurora-sunset");
+        AddThemeItem(themeItem, "Obsidian Dark", "obsidian-dark");
+        AddThemeItem(themeItem, "Custom GIF", "custom-gif");
+        menu.Items.Add(themeItem);
 
         menu.Items.Add(new ToolStripSeparator());
 
-        var openBrowserItem = new ToolStripMenuItem("🌐 Открыть Overlay в браузере", null, (_, _) =>
+        // ── Open in browser ──
+        var browserItem = MakeItem("Открыть Overlay в браузере", false);
+        browserItem.Click += (_, _) =>
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "http://localhost:5000",
                 UseShellExecute = true
             });
-        })
-        {
-            Font = new Font("Segoe UI Emoji", 9f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(235, 230, 255)
         };
-        menu.Items.Add(openBrowserItem);
+        menu.Items.Add(browserItem);
 
         menu.Items.Add(new ToolStripSeparator());
 
-        var exitItem = new ToolStripMenuItem("❌ Выход", null, async (_, _) => await ShutdownAsync())
-        {
-            Font = new Font("Segoe UI Emoji", 9f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(255, 120, 140)
-        };
+        // ── Exit ──
+        var exitItem = MakeItem("Выход", false, isExit: true);
+        exitItem.Click += async (_, _) => await ShutdownAsync();
         menu.Items.Add(exitItem);
 
         _trayIcon.ContextMenuStrip = menu;
 
+        menu.Opening += (_, _) => SyncThemeFromConfig();
+        themeItem.DropDownOpening += (_, _) => SyncThemeFromConfig();
         SyncThemeFromConfig();
+    }
+
+    private static ToolStripMenuItem MakeItem(string text, bool bold, bool isExit = false)
+    {
+        return new ToolStripMenuItem(text)
+        {
+            Font = new Font("Segoe UI", 9.75f, bold ? FontStyle.Bold : FontStyle.Regular),
+            ForeColor = isExit ? Color.FromArgb(240, 100, 110) : Color.FromArgb(225, 220, 245),
+            Padding = new Padding(8, 5, 24, 5),
+            Margin = new Padding(4, 2, 4, 2),
+        };
+    }
+
+    private void AddThemeItem(ToolStripMenuItem parent, string title, string key)
+    {
+        var item = new ToolStripMenuItem(title, null, async (_, _) => await ChangeThemeAsync(key))
+        {
+            Checked = key == _currentTheme,
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Regular),
+            ForeColor = Color.FromArgb(220, 215, 240),
+            Padding = new Padding(8, 4, 20, 4),
+            Margin = new Padding(4, 1, 4, 1),
+        };
+        _themeMenuItems[key] = item;
+        parent.DropDownItems.Add(item);
+    }
+
+    private static void TryRoundCorners(IntPtr handle)
+    {
+        try
+        {
+            int pref = DWMWCP_ROUND;
+            DwmSetWindowAttribute(handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
+        }
+        catch { }
     }
 
     private async void SyncThemeFromConfig()
@@ -125,9 +166,7 @@ public class TrayApplication : ApplicationContext
                     {
                         string? activeTheme = themeProp.GetString();
                         if (!string.IsNullOrWhiteSpace(activeTheme))
-                        {
                             _currentTheme = activeTheme;
-                        }
                     }
                 }
             }
@@ -144,54 +183,29 @@ public class TrayApplication : ApplicationContext
                     using var doc = System.Text.Json.JsonDocument.Parse(json);
                     if (doc.RootElement.TryGetProperty("theme", out var themeProp))
                     {
-                        string? savedTheme = themeProp.GetString();
-                        if (!string.IsNullOrWhiteSpace(savedTheme))
-                        {
-                            _currentTheme = savedTheme;
-                        }
+                        string? saved = themeProp.GetString();
+                        if (!string.IsNullOrWhiteSpace(saved))
+                            _currentTheme = saved;
                     }
                 }
             }
 
             foreach (var kvp in _themeMenuItems)
-            {
-                kvp.Value.Checked = (kvp.Key == _currentTheme);
-            }
+                kvp.Value.Checked = kvp.Key == _currentTheme;
         }
         catch { }
-    }
-
-    private void AddThemeMenuItem(ToolStripMenuItem parent, string title, string themeKey)
-    {
-        var item = new ToolStripMenuItem(title, null, async (_, _) => await ChangeThemeAsync(themeKey))
-        {
-            Checked = (themeKey == _currentTheme),
-            Font = new Font("Segoe UI Emoji", 9f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(235, 230, 255)
-        };
-        _themeMenuItems[themeKey] = item;
-        parent.DropDownItems.Add(item);
     }
 
     private async Task ChangeThemeAsync(string themeKey)
     {
         _currentTheme = themeKey;
-
         foreach (var kvp in _themeMenuItems)
-        {
-            kvp.Value.Checked = (kvp.Key == themeKey);
-        }
+            kvp.Value.Checked = kvp.Key == themeKey;
 
-        try
-        {
-            await _httpClient.GetAsync($"http://localhost:5000/api/theme/set?name={themeKey}");
-        }
-        catch { }
+        try { await _httpClient.GetAsync($"http://localhost:5000/api/theme/set?name={themeKey}"); } catch { }
 
         if (_playerWindow != null && !_playerWindow.IsDisposed)
-        {
             await _playerWindow.NavigateToThemeAsync(themeKey);
-        }
     }
 
     private void ShowPlayerWindow()
@@ -199,14 +213,10 @@ public class TrayApplication : ApplicationContext
         try
         {
             if (_playerWindow == null || _playerWindow.IsDisposed)
-            {
                 _playerWindow = new PlayerWindow();
-            }
 
             if (_playerWindow.WindowState == FormWindowState.Minimized)
-            {
                 _playerWindow.WindowState = FormWindowState.Normal;
-            }
 
             _playerWindow.Show();
             _playerWindow.BringToFront();
@@ -227,12 +237,8 @@ public class TrayApplication : ApplicationContext
         {
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
-
             if (_playerWindow != null && !_playerWindow.IsDisposed)
-            {
                 _playerWindow.ClosePermanently();
-            }
-
             await _app.StopAsync();
         }
         catch (Exception ex)
@@ -241,72 +247,178 @@ public class TrayApplication : ApplicationContext
             if (!Directory.Exists(logFolder)) Directory.CreateDirectory(logFolder);
             File.AppendAllText(Path.Combine(logFolder, "shutdown_error.log"), $"{DateTime.Now}\n{ex}\n");
         }
-        finally
-        {
-            ExitThread();
-        }
+        finally { ExitThread(); }
     }
 
     protected override void ExitThreadCore()
     {
-        try
-        {
-            _trayIcon.Visible = false;
-            _trayIcon.Dispose();
-        }
-        catch { }
-
+        try { _trayIcon.Visible = false; _trayIcon.Dispose(); } catch { }
         base.ExitThreadCore();
     }
 }
 
-public class PurpleColorTable : ProfessionalColorTable
+// ═══════════════════════════════════════════════════════════
+//  Spectreq Menu Renderer — clean, no emoji, premium feel
+// ═══════════════════════════════════════════════════════════
+
+public class SpectreqMenuRenderer : ToolStripProfessionalRenderer
 {
-    public override Color ToolStripDropDownBackground => Color.FromArgb(20, 15, 36);
-    public override Color ImageMarginGradientBegin => Color.FromArgb(20, 15, 36);
-    public override Color ImageMarginGradientMiddle => Color.FromArgb(20, 15, 36);
-    public override Color ImageMarginGradientEnd => Color.FromArgb(20, 15, 36);
+    // Palette
+    private static readonly Color Bg = Color.FromArgb(14, 12, 24);
+    private static readonly Color HoverFill = Color.FromArgb(28, 24, 50);
+    private static readonly Color HoverBorderColor = Color.FromArgb(60, 120, 80, 255);
+    private static readonly Color AccentPurple = Color.FromArgb(130, 80, 255);
+    private static readonly Color AccentCyan = Color.FromArgb(0, 210, 240);
+    private static readonly Color TextNormal = Color.FromArgb(200, 195, 225);
+    private static readonly Color TextHover = Color.FromArgb(245, 242, 255);
+    private static readonly Color SepColor = Color.FromArgb(35, 130, 80, 255);
 
-    public override Color MenuItemSelected => Color.FromArgb(109, 40, 217);
-    public override Color MenuItemSelectedGradientBegin => Color.FromArgb(109, 40, 217);
-    public override Color MenuItemSelectedGradientEnd => Color.FromArgb(124, 58, 237);
+    public SpectreqMenuRenderer() : base(new SpectreqColors()) { }
 
-    public override Color MenuItemPressedGradientBegin => Color.FromArgb(91, 33, 182);
-    public override Color MenuItemPressedGradientEnd => Color.FromArgb(109, 40, 217);
-    public override Color MenuItemBorder => Color.FromArgb(168, 85, 247);
-    public override Color MenuBorder => Color.FromArgb(88, 28, 135);
-
-    public override Color SeparatorDark => Color.FromArgb(60, 45, 95);
-    public override Color SeparatorLight => Color.Transparent;
-
-    public override Color CheckBackground => Color.FromArgb(147, 51, 234);
-    public override Color CheckSelectedBackground => Color.FromArgb(168, 85, 247);
-    public override Color CheckPressedBackground => Color.FromArgb(192, 132, 252);
-}
-
-public class PurpleMenuRenderer : ToolStripProfessionalRenderer
-{
-    public PurpleMenuRenderer() : base(new PurpleColorTable()) { }
-
-    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+    protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
     {
-        e.TextColor = e.Item.Selected ? Color.White : Color.FromArgb(235, 230, 255);
-        base.OnRenderItemText(e);
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var r = e.AffectedBounds;
+
+        // Solid dark fill
+        using var bg = new SolidBrush(Bg);
+        g.FillRectangle(bg, r);
+
+        // Very subtle gradient sheen at top
+        if (r.Height > 0)
+        {
+            using var sheen = new LinearGradientBrush(
+                new Rectangle(r.X, r.Y, r.Width, Math.Min(50, r.Height)),
+                Color.FromArgb(8, 255, 255, 255), Color.Transparent, LinearGradientMode.Vertical);
+            g.FillRectangle(sheen, r.X, r.Y, r.Width, Math.Min(50, r.Height));
+        }
+
+        // Left accent stripe (2px, vertical gradient purple → cyan)
+        if (r.Height > 10)
+        {
+            using var stripe = new LinearGradientBrush(
+                new Point(r.X, r.Y + 6), new Point(r.X, r.Bottom - 6),
+                Color.FromArgb(80, AccentPurple), Color.FromArgb(40, AccentCyan));
+            using var pen = new Pen(stripe, 2f);
+            g.DrawLine(pen, r.X + 2, r.Y + 8, r.X + 2, r.Bottom - 8);
+        }
+
+        // Outer border
+        using var borderPen = new Pen(Color.FromArgb(30, 160, 120, 255), 1f);
+        g.DrawRectangle(borderPen, r.X, r.Y, r.Width - 1, r.Height - 1);
     }
 
     protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
     {
-        if (e.Item.Selected)
-        {
-            Rectangle rect = new Rectangle(2, 1, e.Item.Width - 4, e.Item.Height - 2);
-            using var brush = new SolidBrush(Color.FromArgb(109, 40, 217));
-            e.Graphics.FillRectangle(brush, rect);
-            using var pen = new Pen(Color.FromArgb(168, 85, 247), 1);
-            e.Graphics.DrawRectangle(pen, rect);
-        }
-        else
-        {
-            base.OnRenderMenuItemBackground(e);
-        }
+        if (!e.Item.Selected && !e.Item.Pressed) return;
+
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+        var rect = new Rectangle(3, 0, e.Item.Width - 6, e.Item.Height);
+        using var path = RoundedRect(rect, 6);
+
+        // Fill — solid dark hover, not gradient (cleaner)
+        using var fill = new SolidBrush(HoverFill);
+        g.FillPath(fill, path);
+
+        // Border
+        using var border = new Pen(HoverBorderColor, 1f);
+        g.DrawPath(border, path);
+
+        // Left accent bar on hover (3px tall line, purple)
+        int barH = Math.Min(16, rect.Height - 8);
+        int barY = rect.Y + (rect.Height - barH) / 2;
+        using var barBrush = new SolidBrush(AccentPurple);
+        g.FillRectangle(barBrush, rect.X + 2, barY, 3, barH);
     }
+
+    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+    {
+        e.TextColor = (e.Item.Selected || e.Item.Pressed) ? TextHover : TextNormal;
+        base.OnRenderItemText(e);
+    }
+
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+    {
+        var g = e.Graphics;
+        int y = e.Item.Height / 2;
+        int left = 16;
+        int right = e.Item.Width - 16;
+        if (right <= left) return;
+
+        using var brush = new LinearGradientBrush(
+            new Point(left, y), new Point(right, y),
+            Color.Transparent, Color.Transparent);
+        var blend = new ColorBlend(3)
+        {
+            Colors = new[] { Color.Transparent, SepColor, Color.Transparent },
+            Positions = new[] { 0f, 0.5f, 1f }
+        };
+        brush.InterpolationColors = blend;
+        using var pen = new Pen(brush, 1f);
+        g.DrawLine(pen, left, y, right, y);
+    }
+
+    protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
+    {
+        e.ArrowColor = e.Item?.Selected == true
+            ? Color.FromArgb(200, 180, 255)
+            : Color.FromArgb(130, 125, 160);
+        base.OnRenderArrow(e);
+    }
+
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        int size = 8;
+        int cx = e.ImageRectangle.X + e.ImageRectangle.Width / 2;
+        int cy = e.ImageRectangle.Y + e.ImageRectangle.Height / 2;
+
+        // Outer glow
+        using var glow = new SolidBrush(Color.FromArgb(30, AccentCyan));
+        g.FillEllipse(glow, cx - size, cy - size, size * 2, size * 2);
+
+        // Dot
+        using var dot = new SolidBrush(AccentCyan);
+        g.FillEllipse(dot, cx - size / 2, cy - size / 2, size, size);
+    }
+
+    private static GraphicsPath RoundedRect(Rectangle r, int rad)
+    {
+        var p = new GraphicsPath();
+        int d = rad * 2;
+        if (r.Width <= 0 || r.Height <= 0) return p;
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
+    }
+}
+
+public class SpectreqColors : ProfessionalColorTable
+{
+    private static readonly Color D = Color.FromArgb(14, 12, 24);
+    public override Color ToolStripDropDownBackground => D;
+    public override Color ImageMarginGradientBegin => D;
+    public override Color ImageMarginGradientMiddle => D;
+    public override Color ImageMarginGradientEnd => D;
+    public override Color MenuItemSelected => Color.FromArgb(28, 24, 50);
+    public override Color MenuItemSelectedGradientBegin => Color.FromArgb(28, 24, 50);
+    public override Color MenuItemSelectedGradientEnd => Color.FromArgb(28, 24, 50);
+    public override Color MenuItemPressedGradientBegin => Color.FromArgb(35, 30, 60);
+    public override Color MenuItemPressedGradientEnd => Color.FromArgb(35, 30, 60);
+    public override Color MenuItemBorder => Color.Transparent;
+    public override Color MenuBorder => Color.FromArgb(30, 160, 120, 255);
+    public override Color SeparatorDark => Color.Transparent;
+    public override Color SeparatorLight => Color.Transparent;
+    public override Color CheckBackground => Color.FromArgb(14, 12, 24);
+    public override Color CheckSelectedBackground => Color.FromArgb(28, 24, 50);
+    public override Color CheckPressedBackground => Color.FromArgb(28, 24, 50);
 }

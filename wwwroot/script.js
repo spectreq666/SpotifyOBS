@@ -209,6 +209,8 @@ function formatTime(sec) {
     return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+let lastTrackKey = "";
+
 function updatePlayersData(data) {
     const isPlaying = !!(data && data.playing && data.title);
 
@@ -233,21 +235,26 @@ function updatePlayersData(data) {
         : "0%";
     const curTime = formatTime(data.position);
     const durTime = formatTime(data.duration);
-    const coverSrc = isPlaying ? "/api/cover?t=" + Date.now() : "";
+
+    const trackKey = isPlaying ? `${data.title}|${data.artist}|${data.album}` : "";
+    if (trackKey !== lastTrackKey) {
+        lastTrackKey = trackKey;
+        const coverSrc = isPlaying ? "/api/cover?t=" + Date.now() : "";
+        if (obsCover) obsCover.src = coverSrc;
+        if (appCover) appCover.src = coverSrc;
+    }
 
     if (obsTitle) obsTitle.textContent = titleTxt;
     if (obsArtist) obsArtist.textContent = artistTxt;
     if (obsProgress) obsProgress.style.width = percentW;
     if (obsCurrent) obsCurrent.textContent = curTime;
     if (obsDuration) obsDuration.textContent = durTime;
-    if (obsCover && coverSrc) obsCover.src = coverSrc;
 
     if (appTitle) appTitle.textContent = titleTxt;
     if (appArtist) appArtist.textContent = artistTxt;
     if (appProgress) appProgress.style.width = percentW;
     if (appCurrent) appCurrent.textContent = curTime;
     if (appDuration) appDuration.textContent = durTime;
-    if (appCover && coverSrc) appCover.src = coverSrc;
 }
 
 async function pollState() {
