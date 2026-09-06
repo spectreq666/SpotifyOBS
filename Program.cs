@@ -2,12 +2,68 @@ using System;
 using System.IO;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Threading;
+using System.Net;
+using System.Net.Sockets;
+using System.Net.NetworkInformation;
+using System.Windows.Forms;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using WindowsAudioCatcher.Media;
+
+const string MutexName = "SpectreqOBS_Spotify_SingleInstance_Mutex";
+const string WakeEventName = "SpectreqOBS_Spotify_WakeEvent";
+
+bool isFirstInstance;
+Mutex? singleInstanceMutex = null;
+
+try
+{
+    singleInstanceMutex = new Mutex(true, @"Local\" + MutexName, out isFirstInstance);
+}
+catch (AbandonedMutexException)
+{
+    isFirstInstance = true;
+}
+catch
+{
+    try
+    {
+        singleInstanceMutex = new Mutex(true, MutexName, out isFirstInstance);
+    }
+    catch
+    {
+        isFirstInstance = true;
+    }
+}
+
+if (!isFirstInstance)
+{
+    Console.WriteLine("Spectreq OBS Spotify уже работает. Активируем работающий экземпляр...");
+    try
+    {
+        if (EventWaitHandle.TryOpenExisting(@"Local\" + WakeEventName, out var wakeEvent) ||
+            EventWaitHandle.TryOpenExisting(WakeEventName, out wakeEvent))
+        {
+            wakeEvent.Set();
+            wakeEvent.Dispose();
+            Environment.Exit(0);
+            return;
+        }
+    }
+    catch { }
+
+    MessageBox.Show(
+        "Приложение Spectreq OBS Spotify уже работает!\nИконка приложения находится в системном трее (возле часов).",
+        "Spectreq OBS Spotify",
+        MessageBoxButtons.OK,
+        MessageBoxIcon.Information);
+    Environment.Exit(0);
+    return;
+}
 
 static string GetAppDirectory()
 {
@@ -35,23 +91,39 @@ try
 }
 catch { }
 
-static void KillPortProcess(int port)
+static int FindAvailablePort(int startingPort = 5000, int maxAttempts = 50)
+{
+    for (int p = startingPort; p < startingPort + maxAttempts; p++)
+    {
+        if (IsPortAvailable(p))
+            return p;
+    }
+    return startingPort;
+}
+
+static bool IsPortAvailable(int port)
 {
     try
     {
-        var psi = new ProcessStartInfo("cmd.exe", $"/c for /f \"tokens=5\" %a in ('netstat -aon ^| findstr \":{port} \"') do taskkill /F /PID %a")
+        var ipProps = IPGlobalProperties.GetIPGlobalProperties();
+        var tcpListeners = ipProps.GetActiveTcpListeners();
+        foreach (var ep in tcpListeners)
         {
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        Process.Start(psi)?.WaitForExit(2000);
+            if (ep.Port == port) return false;
+        }
+
+        using var tcpListener = new TcpListener(IPAddress.Loopback, port);
+        tcpListener.Start();
+        tcpListener.Stop();
+        return true;
     }
-    catch { }
+    catch
+    {
+        return false;
+    }
 }
 
-KillPortProcess(5000);
+int port = FindAvailablePort(5000);
 
 string wwwrootPath = Path.Combine(appDir, "wwwroot");
 if (!Directory.Exists(wwwrootPath))
@@ -74,7 +146,7 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     WebRootPath = wwwrootPath
 });
 
-builder.WebHost.UseUrls("http://localhost:5000");
+builder.WebHost.UseUrls($"http://localhost:{port}");
 
 builder.Services.AddSingleton<SpotifyWatcher>();
 builder.Services.AddHostedService<SpotifyBackgroundService>();
@@ -287,6 +359,64 @@ app.MapFallbackToFile("index.html", new StaticFileOptions { FileProvider = fileP
 
 await app.StartAsync();
 
-Application.Run(new WindowsAudioCatcher.TrayApplication(app));
+EventWaitHandle? wakeEventHandle = null;
+try
+{
+    wakeEventHandle = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\" + WakeEventName);
+}
+catch
+{
+    try
+    {
+        wakeEventHandle = new EventWaitHandle(false, EventResetMode.AutoReset, WakeEventName);
+    }
+    catch { }
+}
+
+using var wakeCts = new CancellationTokenSource();
+var trayApp = new WindowsAudioCatcher.TrayApplication(app, port);
+
+if (wakeEventHandle != null)
+{
+    var wakeThread = new Thread(() =>
+    {
+        var waitHandles = new WaitHandle[] { wakeEventHandle, wakeCts.Token.WaitHandle };
+        while (!wakeCts.Token.IsCancellationRequested)
+        {
+            try
+            {
+                int idx = WaitHandle.WaitAny(waitHandles);
+                if (idx == 0)
+                {
+                    trayApp.ShowPlayerWindowFromExternal();
+                }
+                else
+                {
+                    break;
+                }
+            }
+            catch
+            {
+                break;
+            }
+        }
+    })
+    {
+        IsBackground = true
+    };
+    wakeThread.Start();
+}
+
+try
+{
+    Application.Run(trayApp);
+}
+finally
+{
+    wakeCts.Cancel();
+    wakeEventHandle?.Dispose();
+    try { singleInstanceMutex?.ReleaseMutex(); } catch { }
+    singleInstanceMutex?.Dispose();
+}
 
 record ThemeDto(string Theme);

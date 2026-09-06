@@ -19,6 +19,7 @@ public class PlayerWindow : Form
     private readonly Label _titleLabel;
     private readonly Panel _nativeContainer;
     private readonly HttpClient _httpClient = new HttpClient();
+    private readonly int _port;
     private bool _isClosingForReal = false;
     private bool _webViewInitialized = false;
 
@@ -34,8 +35,9 @@ public class PlayerWindow : Form
     private const int WM_NCLBUTTONDOWN = 0xA1;
     private const int HT_CAPTION = 0x2;
 
-    public PlayerWindow()
+    public PlayerWindow(int port = 5000)
     {
+        _port = port;
         Text = "Spectreq OBS Spotify";
         Size = new Size(760, 710);
         MinimumSize = new Size(640, 500);
@@ -209,7 +211,7 @@ public class PlayerWindow : Form
 
                 try { await _webView.CoreWebView2.Profile.ClearBrowsingDataAsync(); } catch { }
 
-                string url = $"http://localhost:5000/?mode=app&v={DateTime.Now.Ticks}";
+                string url = $"http://localhost:{_port}/?mode=app&v={DateTime.Now.Ticks}";
 
                 _webView.CoreWebView2.NavigationCompleted += async (_, args) =>
                 {
@@ -457,7 +459,7 @@ public class PlayerWindow : Form
     {
         try
         {
-            await _httpClient.GetAsync($"http://localhost:5000/api/theme/set?name={key}");
+            await _httpClient.GetAsync($"http://localhost:{_port}/api/theme/set?name={key}");
             if (_webView?.CoreWebView2 != null)
                 await _webView.CoreWebView2.ExecuteScriptAsync($"if(window.setTheme)window.setTheme('{key}')");
             MessageBox.Show($"Тема «{key}» установлена!", "Тема", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -478,14 +480,14 @@ public class PlayerWindow : Form
             using var content = new ByteArrayContent(bytes);
             try
             {
-                await _httpClient.PostAsync("http://localhost:5000/api/gif/upload", content);
+                await _httpClient.PostAsync($"http://localhost:{_port}/api/gif/upload", content);
             }
             catch
             {
                 string wwwroot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
                 Directory.CreateDirectory(wwwroot);
                 await File.WriteAllBytesAsync(Path.Combine(wwwroot, "custom_bg.gif"), bytes);
-                await _httpClient.GetAsync("http://localhost:5000/api/theme/set?name=custom-gif");
+                await _httpClient.GetAsync($"http://localhost:{_port}/api/theme/set?name=custom-gif");
             }
             await NavigateToThemeAsync("custom-gif");
             MessageBox.Show("GIF фон обновлён!", "Кастомная тема", MessageBoxButtons.OK, MessageBoxIcon.Information);

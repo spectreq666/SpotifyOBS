@@ -6,6 +6,7 @@ using System.Drawing.Text;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.AspNetCore.Builder;
@@ -16,6 +17,8 @@ public class TrayApplication : ApplicationContext
 {
     private readonly NotifyIcon _trayIcon;
     private readonly WebApplication _app;
+    private readonly int _port;
+    private readonly SynchronizationContext? _syncContext;
     private PlayerWindow? _playerWindow;
     private readonly HttpClient _httpClient = new HttpClient();
     private readonly Dictionary<string, ToolStripMenuItem> _themeMenuItems = new();
@@ -27,9 +30,11 @@ public class TrayApplication : ApplicationContext
     private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     private const int DWMWCP_ROUND = 2;
 
-    public TrayApplication(WebApplication app)
+    public TrayApplication(WebApplication app, int port = 5000)
     {
         _app = app;
+        _port = port;
+        _syncContext = SynchronizationContext.Current;
 
         string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Logo.ico");
         Icon appIcon = SystemIcons.Application;
@@ -90,17 +95,47 @@ public class TrayApplication : ApplicationContext
 
         menu.Items.Add(new ToolStripSeparator());
 
+        if (_port != 5000)
+        {
+            _trayIcon.ShowBalloonTip(3500, "Spectreq OBS Spotify", $"Порт 5000 занят. Оверлей запущен на http://localhost:{_port}", ToolTipIcon.Info);
+        }
+
         // ── Open in browser ──
-        var browserItem = MakeItem("Открыть Overlay в браузере", false);
+        string browserText = _port == 5000 ? "Открыть Overlay в браузере" : $"Открыть Overlay в браузере (:{_port})";
+        var browserItem = MakeItem(browserText, false);
         browserItem.Click += (_, _) =>
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
-                FileName = "http://localhost:5000",
+                FileName = $"http://localhost:{_port}",
                 UseShellExecute = true
             });
         };
         menu.Items.Add(browserItem);
+
+        // ── Copy OBS Link ──
+        var copyLinkItem = MakeItem("Скопировать ссылку для OBS", false);
+        copyLinkItem.Click += (_, _) =>
+        {
+            string url = $"http://localhost:{_port}";
+            bool ok = CopyToClipboard(url);
+            try
+            {
+                _trayIcon.ShowBalloonTip(3000, "Spectreq OBS Spotify", $"Ссылка скопирована в буфер обмена:\n{url}", ToolTipIcon.Info);
+            }
+            catch { }
+
+            copyLinkItem.Text = ok ? "✓ Ссылка скопирована!" : "Скопировать ссылку для OBS";
+            var timer = new System.Windows.Forms.Timer { Interval = 2500 };
+            timer.Tick += (_, _) =>
+            {
+                copyLinkItem.Text = "Скопировать ссылку для OBS";
+                timer.Stop();
+                timer.Dispose();
+            };
+            timer.Start();
+        };
+        menu.Items.Add(copyLinkItem);
 
         menu.Items.Add(new ToolStripSeparator());
 
@@ -157,7 +192,7 @@ public class TrayApplication : ApplicationContext
         {
             try
             {
-                var resp = await _httpClient.GetAsync("http://localhost:5000/api/theme");
+                var resp = await _httpClient.GetAsync($"http://localhost:{_port}/api/theme");
                 if (resp.IsSuccessStatusCode)
                 {
                     string json = await resp.Content.ReadAsStringAsync();
@@ -202,18 +237,18 @@ public class TrayApplication : ApplicationContext
         foreach (var kvp in _themeMenuItems)
             kvp.Value.Checked = kvp.Key == themeKey;
 
-        try { await _httpClient.GetAsync($"http://localhost:5000/api/theme/set?name={themeKey}"); } catch { }
+        try { await _httpClient.GetAsync($"http://localhost:{_port}/api/theme/set?name={themeKey}"); } catch { }
 
         if (_playerWindow != null && !_playerWindow.IsDisposed)
             await _playerWindow.NavigateToThemeAsync(themeKey);
     }
 
-    private void ShowPlayerWindow()
+    public void ShowPlayerWindow()
     {
         try
         {
             if (_playerWindow == null || _playerWindow.IsDisposed)
-                _playerWindow = new PlayerWindow();
+                _playerWindow = new PlayerWindow(_port);
 
             if (_playerWindow.WindowState == FormWindowState.Minimized)
                 _playerWindow.WindowState = FormWindowState.Normal;
@@ -228,6 +263,18 @@ public class TrayApplication : ApplicationContext
             if (!Directory.Exists(logFolder)) Directory.CreateDirectory(logFolder);
             File.AppendAllText(Path.Combine(logFolder, "window_error.log"), $"{DateTime.Now}\n{ex}\n");
             MessageBox.Show($"Ошибка открытия окна: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    public void ShowPlayerWindowFromExternal()
+    {
+        if (_syncContext != null)
+        {
+            _syncContext.Post(_ => ShowPlayerWindow(), null);
+        }
+        else
+        {
+            ShowPlayerWindow();
         }
     }
 
@@ -248,6 +295,41 @@ public class TrayApplication : ApplicationContext
             File.AppendAllText(Path.Combine(logFolder, "shutdown_error.log"), $"{DateTime.Now}\n{ex}\n");
         }
         finally { ExitThread(); }
+    }
+
+    private static bool CopyToClipboard(string text)
+    {
+        bool success = false;
+        void DoCopy()
+        {
+            for (int i = 0; i < 5; i++)
+            {
+                try
+                {
+                    Clipboard.SetDataObject(text, true);
+                    success = true;
+                    return;
+                }
+                catch
+                {
+                    Thread.Sleep(50);
+                }
+            }
+        }
+
+        if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
+        {
+            DoCopy();
+        }
+        else
+        {
+            var staThread = new Thread(DoCopy);
+            staThread.SetApartmentState(ApartmentState.STA);
+            staThread.Start();
+            staThread.Join(1000);
+        }
+
+        return success;
     }
 
     protected override void ExitThreadCore()
